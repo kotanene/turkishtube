@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TürkishTube</title>
+<meta name="theme-color" content="#e30a17">
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<section class="welcome" id="welcome" aria-label="Açılış mesajı">
+  <div class="welcome-glow"></div>
+  <div class="welcome-card">
+    <img class="welcome-photo" src="https://upload.wikimedia.org/wikipedia/commons/c/c5/Atat%C3%BCrk_portre.png" alt="Mustafa Kemal Atatürk portresi" referrerpolicy="no-referrer">
+    <p class="welcome-kicker">TürkishTube sunar</p>
+    <blockquote>“Bütün ümidim gençliktedir.”</blockquote>
+    <p class="welcome-name">Mustafa Kemal Atatürk</p>
+    <button class="welcome-skip" id="welcome-skip" type="button">Devam et</button>
+  </div>
+</section>
+<header>
+  <a class="brand" href="#/"><img src="/logo.svg" alt=""><span>TürkishTube</span></a>
+  <nav class="nav" aria-label="Ana menü">
+    <a href="#/shorts">Shorts</a>
+    <a href="#/subscriptions">Abonelikler</a>
+  </nav>
+  <form class="search" id="sf" role="search">
+    <input id="q" type="search" placeholder="Video ara  ( / )" autocomplete="off" maxlength="200" list="sg" aria-label="Video ara">
+    <datalist id="sg"></datalist>
+    <button type="submit">Ara</button>
+  </form>
+</header>
+<main id="app"></main>
+<footer><span>TürkishTube, YouTube'dan bağımsız ve açık kaynaklı API'lerle çalışır.</span><span>Yapanlar: <strong>Kotanene21</strong></span></footer>
+<script src="/vendor/hls.js" defer></script>
+<script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "turkishtube",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TürkishTube - açık kaynaklı Piped/Invidious API'leri ile çalışan bağımsız video izleme sitesi",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.19.2", "hls.js": "^1.5.13" }
+}

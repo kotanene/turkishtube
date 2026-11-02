@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: turkishtube
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/status
+    autoDeploy: true
