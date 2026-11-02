@@ -198,6 +198,10 @@ function mountPlayer(stage, bar, d) {
   cur = player;
   let i = 0;
   const sel = h('select', { 'aria-label': 'Kalite' }, src.map((s, n) => h('option', { value: n }, s.label)));
+  const speedSel = h('select', { 'aria-label': 'Oynatma Hızı' },
+    [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(sp => h('option', { value: sp, selected: sp === 1 ? true : undefined }, `${sp}x`))
+  );
+  speedSel.addEventListener('change', () => { video.playbackRate = +speedSel.value; });
   const sponsorNote = h('span', { class: 'sponsor-note' }, 'Reklamsız akış · Sponsor geçişi hazırlanıyor');
   let segments = [], lastSkipped = -1;
   sponsorSegments(d.id).then(found => {
@@ -233,7 +237,7 @@ function mountPlayer(stage, bar, d) {
   video.addEventListener('error', fail);
   sel.addEventListener('change', () => load(+sel.value, true));
   stage.replaceChildren(video);
-  bar.replaceChildren(src.length > 1 ? sel : null, sponsorNote,
+  bar.replaceChildren(src.length > 1 ? sel : null, speedSel, sponsorNote,
     h('button', { class: 'ghost', onclick: () => embed('YouTube oynatıcısı kullanılıyor.') }, 'YouTube oynatıcısıyla aç'));
   load(0);
 }
