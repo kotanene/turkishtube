@@ -123,7 +123,7 @@ async function shortsPage(my) {
   if (my !== seq) return;
   const grid = h('div', { class: 'grid shorts' }, d.items.map(v => card(v)));
   app.replaceChildren(h('h1', { class: 'pt' }, 'Shorts'),
-    h('p', { class: 'subnote' }, 'Üç dakikaya kadar olan kısa videolar.'),
+    h('p', { class: 'subnote' }, 'Kısa videolar.'),
     d.items.length ? grid : h('p', { class: 'empty' }, 'Şu anda kısa video bulunamadı. Biraz sonra tekrar deneyin.'));
 }
 

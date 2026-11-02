@@ -182,20 +182,20 @@ app.get('/api/search', (req, res) => wrap(res, async () => {
   if (!q) return { items: [], next: null };
   return search(q, req.query.next);
 }));
+// Açık kaynak sunucularda ayrı bir Shorts uç noktası yok. Birkaç arama
+// sorgusunu birleştirip kısa videoları seçiyoruz; böylece tek sorgunun
+// uzun derleme videolarıyla dolması sayfayı boş bırakmıyor.
+const SHORTS_QUERIES = ['#shorts', 'shorts', 'keşfet shorts', 'shorts türkçe'];
 app.get('/api/shorts', (req, res) => wrap(res, async () => {
-  let result;
-  try {
-    // Bazı Piped/Invidious sunucuları başında # bulunan sorguyu hatalı işler.
-    result = await cached('shorts', 300000, () => search('shorts'));
-  } catch (error) {
-    // Shorts listesi ana işlevleri engellememeli; sağlayıcı geçici olarak kapalıysa
-    // istemciye hata yerine boş bir liste gönderilir.
-    console.warn('Shorts alınamadı:', error.message);
-    return { items: [] };
-  }
-  // Açık kaynak sunucular Shorts için ortak bir uç nokta sunmuyor. Bu nedenle
-  // arama sonuçlarından kısa, süre bilgisi olan videoları seçiyoruz.
-  return { items: result.items.filter(item => item.duration > 0 && item.duration <= 180) };
+  const results = await Promise.allSettled(SHORTS_QUERIES.map(q =>
+    cached('sh:' + q, 300000, () => search(q))));
+  const items = [...new Map(results
+    .flatMap(r => r.status === 'fulfilled' ? r.value.items : [])
+    .map(v => [v.id, v])).values()];
+  const short = items.filter(v => v.duration > 0 && v.duration <= 180);
+  const medium = items.filter(v => v.duration > 180 && v.duration <= 600);
+  const picked = short.length >= 8 ? short : [...short, ...medium];
+  return { items: (picked.length ? picked : items).slice(0, 30) };
 }));
 app.get('/api/suggest', (req, res) => wrap(res, async () => {
   const q = String(req.query.q || '').trim().slice(0, 100);
