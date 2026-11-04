@@ -1,5 +1,7 @@
 import express from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +27,40 @@ const text = (s = '') => String(s).replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
 const enc = o => Buffer.from(JSON.stringify(o)).toString('base64url');
 const dec = s => { try { return JSON.parse(Buffer.from(String(s), 'base64url').toString()); } catch { return null; } };
+
+// ---- Yerel yorumlar ----
+// YouTube'a yorum göndermek için OAuth gerekiyor; bu yüzden kullanıcı
+// yorumlarını kendi sunucumuzda tutuyoruz. Render'ın ücretsiz planında disk
+// kalıcı olmadığı için bu dosya yeniden başlatmada sıfırlanabilir.
+const DATA_DIR = process.env.DATA_DIR || path.join(dir, 'data');
+const COMMENTS_FILE = path.join(DATA_DIR, 'comments.json');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+let commentStore = {};
+try { commentStore = JSON.parse(fs.readFileSync(COMMENTS_FILE, 'utf8')); } catch {}
+if (!commentStore || typeof commentStore !== 'object' || Array.isArray(commentStore)) commentStore = {};
+let commentSaveTimer;
+const saveComments = () => {
+  clearTimeout(commentSaveTimer);
+  commentSaveTimer = setTimeout(() => {
+    fs.writeFile(COMMENTS_FILE, JSON.stringify(commentStore), error => {
+      if (error) console.warn('Yorumlar kaydedilemedi:', error.message);
+    });
+  }, 400);
+};
+const localComments = id => (Array.isArray(commentStore[id]) ? commentStore[id] : []);
+const addLocalComment = (id, comment) => {
+  commentStore[id] = [comment, ...localComments(id)].slice(0, 200);
+  saveComments();
+};
+const commentHits = new Map();
+const canComment = ip => {
+  const now = Date.now();
+  const hits = (commentHits.get(ip) || []).filter(t => now - t < 60000);
+  if (hits.length >= 8) return false;
+  hits.push(now);
+  commentHits.set(ip, hits);
+  return true;
+};
 
 const cache = new Map();
 const cached = async (key, ttl, fn) => {
@@ -160,6 +196,8 @@ const iComments = async (h, id) => {
 // ---- Sunucu ----
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '32kb' }));
 const wrap = async (res, fn) => {
   try { res.json(await fn()); }
   catch (e) {
@@ -169,13 +207,26 @@ const wrap = async (res, fn) => {
 };
 const bad = () => Object.assign(new Error('bad'), { status: 400 });
 
+const getTrending = () => cached('trend', 600000, () => tryAll(both(
+  async h => { const a = clean((await getJSON(`${h}/trending?region=${REGION}`)).map?.(pCard)); if (!a.length) throw new Error('boş'); return a; },
+  async h => { const a = clean((await getJSON(`${h}/api/v1/trending?region=${REGION}`)).map?.(v => iCard(v, h))); if (!a.length) throw new Error('boş'); return a; })));
+
 app.get('/api/trending', (req, res) => wrap(res, async () => {
-  try {
-    const items = await cached('trend', 600000, () => tryAll(both(
-      async h => { const a = clean((await getJSON(`${h}/trending?region=${REGION}`)).map?.(pCard)); if (!a.length) throw new Error('boş'); return a; },
-      async h => { const a = clean((await getJSON(`${h}/api/v1/trending?region=${REGION}`)).map?.(v => iCard(v, h))); if (!a.length) throw new Error('boş'); return a; })));
-    return { items };
-  } catch { return { items: (await search('gündem')).items }; }   // Gündem listesi kapalıysa arama ile doldur
+  try { return { items: await getTrending() }; }
+  catch { return { items: (await search('gündem')).items }; }   // Gündem listesi kapalıysa arama ile doldur
+}));
+// Ana sayfa akışı: ilk sayfada trend + arama sonuçlarını birleştirir,
+// sonraki sayfalarda arama sayfalama anahtarını kullanır.
+app.get('/api/feed', (req, res) => wrap(res, async () => {
+  if (req.query.next) return search('gündem', req.query.next);
+  const [trend, extra] = await Promise.allSettled([getTrending(), search('gündem')]);
+  const items = [
+    ...(trend.status === 'fulfilled' ? trend.value : []),
+    ...(extra.status === 'fulfilled' ? extra.value.items : [])
+  ];
+  const unique = [...new Map(items.map(v => [v.id, v])).values()];
+  if (!unique.length) throw new Error('içerik yok');
+  return { items: unique, next: extra.status === 'fulfilled' ? extra.value.next : null };
 }));
 app.get('/api/search', (req, res) => wrap(res, async () => {
   const q = String(req.query.q || '').trim().slice(0, 200);
@@ -215,8 +266,24 @@ app.get('/api/channel/:id', (req, res) => wrap(res, async () => {
 }));
 app.get('/api/comments/:id', (req, res) => wrap(res, async () => {
   const id = req.params.id; if (!ID.test(id)) throw bad();
-  return cached('m:' + id, 600000, () => tryAll(both(h => pComments(h, id), h => iComments(h, id))));
+  let remote = [];
+  try {
+    const d = await cached('m:' + id, 600000, () => tryAll(both(h => pComments(h, id), h => iComments(h, id))));
+    remote = d.items || [];
+  } catch (error) { console.warn('Yorumlar alınamadı:', error.message); }
+  return { items: [...localComments(id), ...remote] };
 }));
+app.post('/api/comments/:id', (req, res) => {
+  const id = req.params.id;
+  if (!ID.test(id)) return res.status(400).json({ error: 'Geçersiz video.' });
+  if (!canComment(req.ip)) return res.status(429).json({ error: 'Çok fazla yorum gönderdin. Biraz sonra tekrar dene.' });
+  const author = String(req.body?.author || '').trim().slice(0, 40) || 'Misafir';
+  const body = String(req.body?.text || '').trim().slice(0, 1000);
+  if (!body) return res.status(400).json({ error: 'Yorum boş olamaz.' });
+  const comment = { id: randomUUID(), author, avatar: '', text: body, likes: 0, time: new Date().toISOString(), local: true };
+  addLocalComment(id, comment);
+  res.status(201).json({ comment });
+});
 app.get('/api/status', (req, res) => res.json({ piped: PIPED, invidious: INV,
   cooldown: Object.fromEntries([...down].filter(([, t]) => t > Date.now()).map(([h, t]) => [h, Math.round((t - Date.now()) / 1000) + ' sn'])) }));
 

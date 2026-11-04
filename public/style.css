@@ -49,8 +49,17 @@ select,.ghost{padding:6px 12px;border:1px solid var(--line);border-radius:999px;
 .stats p{margin:10px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .comments{margin-top:24px}
 .comments h2{font-size:1.1rem}
+.cm-form{display:grid;gap:10px;margin:14px 0 20px;padding:14px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+.cm-form input,.cm-form textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
+.cm-form textarea{resize:vertical;min-height:80px}
+.cm-form button{justify-self:start;padding:8px 18px;border:0;border-radius:999px;background:var(--red);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.cm-form button:disabled{opacity:.6;cursor:wait}
+.cm-list{margin-top:6px}
 .cm{display:flex;gap:12px;margin:0 0 18px}
 .cm p{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.local-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--red);color:#fff;font-size:.65rem;font-weight:700;vertical-align:middle}
+.load-status{min-height:1.5em;margin:10px 0;color:var(--muted);text-align:center}
+.sentinel{height:1px}
 .side{display:grid;gap:14px;align-content:start}
 .shorts{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:24px 16px}
 .shorts .thumb{aspect-ratio:9/16}

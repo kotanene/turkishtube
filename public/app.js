@@ -98,22 +98,49 @@ const skeleton = () => h('div', { class: 'grid' }, Array.from({ length: 12 }, ()
 const errorBox = (msg, retry) => h('div', { class: 'err' }, h('p', {}, msg), h('button', { class: 'ghost', onclick: retry }, 'Tekrar dene'));
 
 // ---------- Sayfalar ----------
-function gridPage(heading, items, q, next) {
+let feedObserver = null;
+function stopFeed() {
+  feedObserver?.disconnect();
+  feedObserver = null;
+}
+
+function infiniteGrid(heading, items, next, loadMore, emptyText = 'Sonuç bulunamadı. Başka bir arama deneyin.') {
   const grid = h('div', { class: 'grid' }, items.map(v => card(v)));
-  const btn = h('button', { class: 'ghost more', onclick: async () => {
-    btn.disabled = true; btn.textContent = 'Yükleniyor…';
-    try { const d = await api(`search?q=${encodeURIComponent(q)}&next=${encodeURIComponent(next)}`); grid.append(...d.items.map(v => card(v))); next = d.next; }
-    catch (error) {
+  const seen = new Set(items.map(v => v.id));
+  const status = h('p', { class: 'load-status' });
+  const sentinel = h('div', { class: 'sentinel', 'aria-hidden': 'true' });
+  let loading = false, done = !next;
+  const load = async () => {
+    if (loading || done) return;
+    loading = true;
+    status.textContent = 'Yükleniyor…';
+    try {
+      const d = await loadMore(next);
+      const fresh = (d.items || []).filter(v => v && !seen.has(v.id));
+      fresh.forEach(v => seen.add(v.id));
+      grid.append(...fresh.map(v => card(v)));
+      next = d.next;
+      if (!next || !fresh.length) {
+        done = true;
+        feedObserver?.disconnect();
+        feedObserver = null;
+      }
+      status.textContent = '';
+    } catch (error) {
       if (error.name === 'AbortError') return;
-      btn.disabled = false;
-      btn.textContent = 'Tekrar dene';
-      return;
-    }
-    if (next) { btn.disabled = false; btn.textContent = 'Daha fazla göster'; } else btn.remove();
-  } }, 'Daha fazla göster');
+      status.textContent = 'Yüklenemedi. Biraz sonra tekrar dene.';
+    } finally { loading = false; }
+  };
+  if (next) {
+    feedObserver = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) load();
+    }, { rootMargin: '700px 0px' });
+    feedObserver.observe(sentinel);
+  }
   app.replaceChildren(h('h1', { class: 'pt' }, heading),
-    items.length ? grid : h('p', { class: 'empty' }, 'Sonuç bulunamadı. Başka bir arama deneyin.'),
-    next && q ? btn : null);
+    items.length ? grid : h('p', { class: 'empty' }, emptyText),
+    status, sentinel);
+  return load;
 }
 
 async function shortsPage(my) {
@@ -146,8 +173,8 @@ async function subscriptionsPage(my) {
 async function homePage(my) {
   document.title = 'TürkishTube';
   app.replaceChildren(h('h1', { class: 'pt' }, 'Gündemdeki videolar'), skeleton());
-  const d = await api('trending');
-  if (my === seq) gridPage('Gündemdeki videolar', d.items);
+  const d = await api('feed');
+  if (my === seq) infiniteGrid('Gündemdeki videolar', d.items, d.next, next => api('feed?next=' + encodeURIComponent(next)));
 }
 
 async function searchPage(q, my) {
@@ -156,7 +183,8 @@ async function searchPage(q, my) {
   document.title = `${q} – TürkishTube`;
   app.replaceChildren(h('h1', { class: 'pt' }, `“${q}” için sonuçlar`), skeleton());
   const d = await api('search?q=' + encodeURIComponent(q));
-  if (my === seq) gridPage(`“${q}” için sonuçlar`, d.items, q, d.next);
+  if (my === seq) infiniteGrid(`“${q}” için sonuçlar`, d.items, d.next, next =>
+    api(`search?q=${encodeURIComponent(q)}&next=${encodeURIComponent(next)}`));
 }
 
 async function channelPage(id, my) {
@@ -243,7 +271,8 @@ function mountPlayer(stage, bar, d) {
 }
 
 const commentEl = c => h('div', { class: 'cm' }, avatar(c.avatar, c.author),
-  h('div', {}, h('b', {}, c.author), ' ', h('small', {}, fmtDate(c.time)), h('p', {}, c.text),
+  h('div', {}, h('b', {}, c.author), c.local ? h('span', { class: 'local-badge' }, 'TürkishTube') : null,
+    ' ', h('small', {}, fmtDate(c.time)), h('p', {}, c.text),
     c.likes > 0 ? h('small', {}, `${nf.format(c.likes)} beğeni`) : null));
 
 async function watchPage(id, my) {
@@ -253,18 +282,56 @@ async function watchPage(id, my) {
   if (my !== seq) return;
   document.title = `${d.title} – TürkishTube`;
   const stage = h('div', { class: 'stage' }), bar = h('div', { class: 'bar' }), comments = h('section', { class: 'comments' });
-  const cbtn = h('button', { class: 'ghost', onclick: async () => {
-    cbtn.disabled = true; cbtn.textContent = 'Yükleniyor…';
+  const commentList = h('div', { class: 'cm-list' });
+  const commentStatus = h('p', { class: 'load-status' });
+  const nameInput = h('input', { name: 'author', placeholder: 'Adın (isteğe bağlı)', maxlength: 40,
+    value: localStorage.getItem('turkishtube-name') || '', 'aria-label': 'Adın' });
+  const textInput = h('textarea', { name: 'text', placeholder: 'Yorum yaz…', maxlength: 1000, rows: 3,
+    required: true, 'aria-label': 'Yorumun' });
+  const send = h('button', { type: 'submit' }, 'Yorum gönder');
+  const form = h('form', { class: 'cm-form' }, nameInput, textInput, send);
+  let commentsLoaded = false, loadSeq = 0;
+  const loadComments = async () => {
+    const mine = ++loadSeq;
+    commentStatus.textContent = 'Yorumlar yükleniyor…';
     try {
       const c = await api('comments/' + id);
-      comments.replaceChildren(h('h2', {}, 'Yorumlar'), c.items.length ? c.items.map(commentEl) : h('p', { class: 'empty' }, 'Yorum bulunamadı.'));
+      if (mine !== loadSeq) return;
+      commentList.replaceChildren(...(c.items.length ? c.items.map(commentEl)
+        : [h('p', { class: 'empty' }, 'Henüz yorum yok. İlk yorumu sen yaz!')]));
+      commentStatus.textContent = '';
+      commentsLoaded = true;
     } catch (error) {
-      if (error.name === 'AbortError') return;
-      cbtn.disabled = false;
-      cbtn.textContent = 'Yorumlar alınamadı, tekrar dene';
+      if (error.name === 'AbortError' || mine !== loadSeq) return;
+      commentStatus.textContent = 'Yorumlar alınamadı.';
+      if (!commentsLoaded) commentList.replaceChildren(h('button', { class: 'ghost', onclick: loadComments }, 'Tekrar dene'));
     }
-  } }, 'Yorumları göster');
-  comments.append(cbtn);
+  };
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const text = textInput.value.trim();
+    if (!text) return;
+    const author = nameInput.value.trim();
+    if (author) localStorage.setItem('turkishtube-name', author);
+    send.disabled = true; send.textContent = 'Gönderiliyor…';
+    try {
+      const response = await fetch('/api/comments/' + id, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ author, text })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Yorum gönderilemedi.');
+      textInput.value = '';
+      loadSeq++;
+      commentList.prepend(commentEl(data.comment));
+      commentsLoaded = true;
+      commentStatus.textContent = '';
+    } catch (error) {
+      commentStatus.textContent = error.message;
+    } finally { send.disabled = false; send.textContent = 'Yorum gönder'; }
+  });
+  comments.append(h('h2', {}, 'Yorumlar'), form, commentStatus, commentList);
+  loadComments();
   const stats = [fmtViews(d.views), fmtDate(d.published), d.likes >= 0 ? `${nf.format(d.likes)} beğeni` : ''].filter(Boolean).join('   ');
   app.replaceChildren(h('div', { class: 'watch' },
     h('div', {}, stage, bar, h('h1', { class: 'vt' }, d.title),
@@ -287,6 +354,7 @@ async function route() {
   const p = new URLSearchParams(qs);
   window.scrollTo(0, 0);
   stopPlayer();
+  stopFeed();
   try {
     if (path.startsWith('/watch')) await watchPage(p.get('v'), my);
     else if (path.startsWith('/channel/')) await channelPage(path.split('/')[2], my);
