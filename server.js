@@ -23,6 +23,15 @@ const ID = /^[\w-]{11}$/, CH = /^[\w-]{10,40}$/;
 const nfc = new Intl.NumberFormat('tr', { notation: 'compact', maximumFractionDigits: 1 });
 const fmtN = n => (typeof n === 'number' && n >= 0 ? nfc.format(n) : '');
 const abs = (b, u) => !u ? '' : u.startsWith('//') ? 'https:' + u : u.startsWith('/') ? b + u : u;
+// Invidious HLS manifestini kendi sunucusu üzerinden proxy'let. local=true
+// olmadan manifest içindeki adresler doğrudan YouTube'a gider; imza Invidious
+// sunucusunun IP'sine bağlı olduğu için tarayıcıda 403 alınır ve oynatıcı
+// YouTube iframe'ine düşer (orada da bot doğrulaması çıkar).
+const localHls = (b, u) => {
+  const url = new URL(abs(b, u));
+  url.searchParams.set('local', 'true');
+  return url.toString();
+};
 const text = (s = '') => String(s).replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
 const enc = o => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -160,7 +169,7 @@ const iVideo = async (h, id) => {
   const sources = (v.formatStreams || []).filter(f => f.url)
     .map(f => ({ label: f.qualityLabel || f.quality || 'Video', url: abs(h, f.url), kind: 'mp4', h: parseInt(f.qualityLabel || f.quality) || 0 }))
     .sort(byQuality).map(({ h, ...r }) => r);
-  if (v.hlsUrl) sources[v.liveNow ? 'unshift' : 'push']({ label: 'Otomatik (HLS)', url: abs(h, v.hlsUrl), kind: 'hls' });
+  if (v.hlsUrl) sources[v.liveNow ? 'unshift' : 'push']({ label: 'Otomatik (HLS)', url: localHls(h, v.hlsUrl), kind: 'hls' });
   return { id, title: v.title || '', description: text(v.description), channel: v.author || '', channelId: v.authorId || '',
     avatar: abs(h, v.authorThumbnails?.[1]?.url || v.authorThumbnails?.[0]?.url), subs: v.subCountText || '', views: v.viewCount ?? -1,
     likes: v.likeCount ?? -1, published: v.publishedText || '', live: !!v.liveNow, sources,

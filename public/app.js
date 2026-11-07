@@ -215,9 +215,11 @@ function mountPlayer(stage, bar, d) {
       player.video.pause();
       cur = null;
     }
-    stage.replaceChildren(h('iframe', { src: `https://www.youtube-nocookie.com/embed/${d.id}?autoplay=1&rel=0`, title: d.title, allowfullscreen: true,
-      allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen' }));
-    bar.replaceChildren(h('span', {}, note));
+    const origin = encodeURIComponent(location.origin);
+    stage.replaceChildren(h('iframe', { src: `https://www.youtube.com/embed/${d.id}?autoplay=1&rel=0&playsinline=1&origin=${origin}`, title: d.title,
+      allowfullscreen: true, allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen' }));
+    bar.replaceChildren(h('span', {}, note),
+      h('a', { class: 'ghost', href: `https://www.youtube.com/watch?v=${d.id}`, target: '_blank', rel: 'noopener' }, 'YouTube’da aç'));
   };
   const src = d.sources || [];
   if (!src.length) return embed('Doğrudan akış bulunamadı. YouTube oynatıcısındaki reklam ve sponsor geçişleri denetlenemez.');
