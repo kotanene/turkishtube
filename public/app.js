@@ -247,22 +247,35 @@ function mountPlayer(stage, bar, d) {
       video.currentTime = segment[1];
     }
   });
-  const load = (n, keep) => {
+  let retries = 0;
+  const load = (n, keep, retry = false) => {
     i = n; sel.value = n;
     const s = src[n], t = keep ? video.currentTime : 0;
     if (cur !== player) return;
+    if (!retry) retries = 0;
     player.hls?.destroy(); player.hls = null;
     if (s.kind === 'hls' && window.Hls && Hls.isSupported()) {
       const x = new Hls(); player.hls = x;
       x.loadSource(s.url); x.attachMedia(video);
-      x.on(Hls.Events.ERROR, (_, e) => { if (e.fatal && cur === player) fail(); });
+      x.on(Hls.Events.ERROR, (_, e) => {
+        if (!e.fatal || cur !== player) return;
+        if (retries < 2) {
+          retries++;
+          setTimeout(() => { if (cur === player) load(n, true, true); }, 600 * retries);
+        } else fail();
+      });
     } else video.src = s.url;
     if (t) video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true });
     video.play().catch(() => {});
   };
   const fail = () => {
     if (cur !== player) return;
-    return i + 1 < src.length ? load(i + 1) : embed('Bu video doğrudan oynatılamadı, YouTube oynatıcısına geçildi.');
+    if (i + 1 < src.length) return load(i + 1);
+    player.hls?.destroy(); player.hls = null;
+    player.video.pause();
+    cur = null;
+    stage.replaceChildren(h('p', { class: 'empty' }, 'Bu video doğrudan oynatılamadı. Sunucu akışı şu an yanıt vermiyor.'));
+    bar.replaceChildren(h('a', { class: 'ghost', href: `https://www.youtube.com/watch?v=${d.id}`, target: '_blank', rel: 'noopener' }, 'YouTube’da aç'));
   };
   video.addEventListener('error', fail);
   sel.addEventListener('change', () => load(+sel.value, true));

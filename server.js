@@ -32,6 +32,38 @@ const localHls = (b, u) => {
   url.searchParams.set('local', 'true');
   return url.toString();
 };
+// HLS manifest ve parçalarını kendi sunucumuz üzerinden geçir. Böylece tarayıcı
+// doğrudan Invidious'a bağlanmaz; CORS, reklam engelleyici ve geçici 403
+// sorunları aşılır. Sunucu, istekleri tarayıcı kimliğiyle ve tekrar denemeli
+// şekilde yapar.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const baseDomain = h => { try { return new URL(h).hostname.split('.').slice(-2).join('.'); } catch { return ''; } };
+const allowedHls = u => {
+  try {
+    const host = new URL(u).hostname;
+    if (/(^|\.)googlevideo\.com$/i.test(host)) return true;
+    return [...INV, ...PIPED].some(h => {
+      const bh = new URL(h).hostname, base = baseDomain(h);
+      return host === bh || host === base || host.endsWith('.' + base);
+    });
+  } catch { return false; }
+};
+const hlsProxy = u => '/api/hls?u=' + encodeURIComponent(u);
+// Invidious'un video vekili (companion) birkaç sunucuya dağıtılıyor. Bazıları
+// YouTube tarafından engellenebiliyor (403). Aynı imzalı adresi diğer
+// companion sunucularıyla deneyerek çalışan bir tanesini buluruz.
+const companionUrls = u => {
+  try {
+    const url = new URL(u);
+    const m = url.hostname.match(/^yt-comp\d+\.(.+)$/i);
+    if (!m) return [];
+    return [1, 2, 3, 4, 5].map(n => {
+      const alt = new URL(url);
+      alt.hostname = `yt-comp${n}.${m[1]}`;
+      return alt.toString();
+    }).filter(x => x !== u);
+  } catch { return []; }
+};
 const text = (s = '') => String(s).replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
 const enc = o => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -163,13 +195,30 @@ const pVideo = async (h, id) => {
     channelId: (s.uploaderUrl || '').split('/channel/')[1] || '', avatar: s.uploaderAvatar || '', subs: fmtN(s.uploaderSubscriberCount),
     views: s.views ?? -1, likes: s.likes ?? -1, published: s.uploadDate || '', live, sources, related: clean(s.relatedStreams?.map(pCard)) };
 };
+// Invidious, video bilgisini uzun süre önbelleğe alabiliyor; bu durumda
+// hlsUrl'nin süresi dolmuş olabiliyor (403). Bölge parametresi önbelleği
+// tazelediği için akışın süresini kontrol edip gerekirse başka bölgeyle
+// yeniden deneriz.
+const hlsLeft = u => {
+  const m = String(u || '').match(/\/expire\/(\d+)/);
+  return m ? Number(m[1]) * 1000 - Date.now() : Infinity;
+};
 const iVideo = async (h, id) => {
-  const v = await getJSON(`${h}/api/v1/videos/${id}?local=true`);
-  if (v.error) throw new Error(v.error);
+  let v = null, last = null;
+  for (const region of [...new Set([REGION, 'US', 'DE'])]) {
+    try {
+      const d = await getJSON(`${h}/api/v1/videos/${id}?local=true&region=${region}`);
+      if (d.error) { last = new Error(d.error); continue; }
+      v = d;
+      if (d.hlsUrl && hlsLeft(d.hlsUrl) > 120000) break;
+      if (!last) last = new Error('HLS akışı bulunamadı');
+    } catch (e) { last = e; }
+  }
+  if (!v) throw last || new Error('Video alınamadı');
   const sources = (v.formatStreams || []).filter(f => f.url)
     .map(f => ({ label: f.qualityLabel || f.quality || 'Video', url: abs(h, f.url), kind: 'mp4', h: parseInt(f.qualityLabel || f.quality) || 0 }))
     .sort(byQuality).map(({ h, ...r }) => r);
-  if (v.hlsUrl) sources[v.liveNow ? 'unshift' : 'push']({ label: 'Otomatik (HLS)', url: localHls(h, v.hlsUrl), kind: 'hls' });
+  if (v.hlsUrl) sources[v.liveNow ? 'unshift' : 'push']({ label: 'Otomatik (HLS)', url: hlsProxy(localHls(h, v.hlsUrl)), kind: 'hls' });
   return { id, title: v.title || '', description: text(v.description), channel: v.author || '', channelId: v.authorId || '',
     avatar: abs(h, v.authorThumbnails?.[1]?.url || v.authorThumbnails?.[0]?.url), subs: v.subCountText || '', views: v.viewCount ?? -1,
     likes: v.likeCount ?? -1, published: v.publishedText || '', live: !!v.liveNow, sources,
@@ -295,6 +344,77 @@ app.post('/api/comments/:id', (req, res) => {
 });
 app.get('/api/status', (req, res) => res.json({ piped: PIPED, invidious: INV,
   cooldown: Object.fromEntries([...down].filter(([, t]) => t > Date.now()).map(([h, t]) => [h, Math.round((t - Date.now()) / 1000) + ' sn'])) }));
+
+// HLS vekili: manifestleri ve parçaları Invidious'tan sunucu tarafında çeker.
+// Manifest içindeki adresleri de bu uç noktaya çevirir; böylece tarayıcı
+// yalnızca kendi sunucumuzla konuşur.
+app.get('/api/hls', async (req, res) => {
+  const raw = String(req.query.u || '');
+  if (!/^https?:\/\//i.test(raw) || !allowedHls(raw)) return res.status(400).end();
+  const headers = { 'user-agent': BROWSER_UA, accept: '*/*', referer: 'https://www.youtube.com/' };
+  const fetchOnce = target => fetch(target, { headers, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+  let upstream = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      upstream = await fetchOnce(raw);
+      if (!upstream.ok && upstream.status === 403) {
+        // Engellenen companion yerine aynı adresi diğerlerinde dene.
+        for (const alt of companionUrls(upstream.url || raw)) {
+          try {
+            const r = await fetchOnce(alt);
+            if (r.ok) { upstream = r; break; }
+          } catch {}
+        }
+      }
+      if (upstream.ok) break;
+      if (![403, 429, 500, 502, 503, 504].includes(upstream.status)) break;
+    } catch { upstream = null; }
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+  }
+  if (!upstream) return res.status(502).end();
+  if (!upstream.ok) return res.status(upstream.status).end();
+  const type = upstream.headers.get('content-type') || '';
+  const finalUrl = upstream.url || raw;
+  const isPlaylist = /mpegurl/i.test(type) || /\.m3u8(?:$|\?)/i.test(finalUrl) || /\/api\/manifest\//i.test(finalUrl);
+  if (isPlaylist) {
+    let body = await upstream.text();
+    body = body.split(/\r?\n/).map(line => {
+      const attr = line.match(/URI="([^"]+)"/);
+      if (attr) {
+        let child = new URL(attr[1], finalUrl).toString();
+        if (/\/api\/manifest\//i.test(child) && !/[?&]local=/.test(child)) child += (child.includes('?') ? '&' : '?') + 'local=true';
+        return line.replace(attr[1], hlsProxy(child));
+      }
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        let child = new URL(trimmed, finalUrl).toString();
+        if (/\/api\/manifest\//i.test(child) && !/[?&]local=/.test(child)) child += (child.includes('?') ? '&' : '?') + 'local=true';
+        return hlsProxy(child);
+      }
+      return line;
+    }).join('\n');
+    res.set('content-type', 'application/vnd.apple.mpegurl; charset=utf-8');
+    res.set('cache-control', 'no-store');
+    return res.send(body);
+  }
+  res.status(upstream.status);
+  res.set('content-type', type || 'application/octet-stream');
+  res.set('cache-control', 'no-store');
+  for (const name of ['content-range', 'accept-ranges', 'content-length']) {
+    const value = upstream.headers.get(name);
+    if (value) res.set(name, value);
+  }
+  if (!upstream.body) return res.end(Buffer.from(await upstream.arrayBuffer()));
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!res.write(Buffer.from(value))) await new Promise(resolve => res.once('drain', resolve));
+    }
+  } catch (error) { console.warn('HLS aktarım hatası:', error.message); }
+  res.end();
+});
 
 app.get('/vendor/hls.js', (q, r) => r.sendFile(path.join(dir, 'node_modules/hls.js/dist/hls.min.js'), error => {
   if (error && !r.headersSent) r.status(404).end();
